@@ -72,7 +72,6 @@ CONFIG: Dict[str, object] = {
     "target_words_min": 1200,
     "intent_labels": ["info", "transac", "comparatif", "guide"],
     "ban_phrases": [
-        "Découvrez",
         "notre collection",
         "sublimer",
         "expérience",
@@ -83,8 +82,6 @@ CONFIG: Dict[str, object] = {
         "alliant style et",
         "une touche d'",
         "notre sélection",
-        "profitez de",
-        "explorez",
     ],
     "tone": "pédagogique_expert_non_promo",
     "word_count_variance": 0.1,
@@ -688,6 +685,65 @@ def _detecter_intention(texte: str) -> str:
     return "info"
 
 
+def _condense_phrase(texte: str, limite: int = 24) -> str:
+    """Condense une phrase pour l'utiliser dans un meta titre/description."""
+
+    propre = (texte or "").strip()
+    if not propre:
+        return ""
+    propre = re.sub(r"[\s]+", " ", propre)
+    propre = propre.strip("-•–|:")
+    if not propre:
+        return ""
+    resultat = textwrap.shorten(propre, width=limite, placeholder="")
+    return resultat.strip()
+
+
+def _benefice_depuis_insight(insight: str) -> str:
+    """Transforme un insight quantitatif en bénéfice court pour les metas."""
+
+    if not insight:
+        return ""
+    insight_min = insight.lower()
+    if "prix" in insight_min:
+        return "Prix maîtrisés"
+    if "matériaux" in insight_min:
+        return "Matériaux experts"
+    if "dimension" in insight_min:
+        return "Dimensions maîtrisées"
+    if "variation" in insight_min or "dispersion" in insight_min:
+        return "Stabilité mesurée"
+    segment = insight.split(":", 1)[-1] if ":" in insight else insight
+    segment = segment.split("(", 1)[0].strip()
+    return _condense_phrase(segment, limite=26)
+
+
+def _formater_avantage(insight: str) -> str:
+    """Formate un insight en avantage court pour la meta description."""
+
+    if not insight:
+        return ""
+    titre, separateur, detail = insight.partition(":")
+    titre_min = titre.lower()
+    detail = detail.strip() or titre.strip()
+    if "prix" in titre_min:
+        principal = detail.split("(", 1)[0].strip() or detail
+        texte = f"Prix maîtrisés {principal}".strip()
+    elif "matériaux" in titre_min:
+        texte = f"Matériaux dominants : {detail}".strip()
+    elif "dimension" in titre_min:
+        texte = f"Dimensions typiques {detail}".strip()
+    elif "variation" in titre_min or "dispersion" in titre_min:
+        texte = f"Variation contrôlée {detail}".strip()
+    else:
+        base = detail or insight
+        texte = _condense_phrase(base, limite=44)
+    texte = texte.strip()
+    if not texte:
+        return ""
+    return texte[0].upper() + texte[1:]
+
+
 def _generer_meta_title(
     titre_collection: str,
     analyse_serp: Optional["AnalyseSerp"] = None,
@@ -696,50 +752,50 @@ def _generer_meta_title(
     """Construit un meta title basé sur la SERP tout en restant ≤ 60 caractères."""
 
     intent = analyse_serp.intent_label if analyse_serp else _detecter_intention(titre_collection)
-    intent_map = {
-        "transac": "Achat en ligne",
-        "comparatif": "Comparatif",
-        "guide": "Guide d'achat",
-        "info": "Tendances",
-    }
+    annee = datetime.now().year
 
-    suffix = intent_map.get(intent, "Guide") + f" {datetime.now().year}"
-
-    termes_serp: List[str] = []
+    benefit_candidates: List[str] = []
+    if focus_unique:
+        benefit_candidates.append(_condense_phrase(f"{focus_unique.capitalize()} durable", limite=28))
     if analyse_serp:
-        compteur = Counter()
-        for domaine in analyse_serp.domaines:
-            for terme in (domaine.termes_dominants or [])[:5]:
-                if terme:
-                    compteur[terme.lower()] += 1
-        for suggestion in analyse_serp.suggestions[:3] if analyse_serp.suggestions else []:
-            if suggestion:
-                compteur[suggestion.lower()] += 1
-        termes_serp = [
-            terme
-            for terme, _ in compteur.most_common()
-            if terme and terme not in titre_collection.lower()
-        ]
+        for insight in analyse_serp.insights_structurels[:3]:
+            benefice = _benefice_depuis_insight(insight)
+            if benefice and benefice not in benefit_candidates:
+                benefit_candidates.append(benefice)
+        if analyse_serp.domaines:
+            premier = analyse_serp.domaines[0]
+            candidats = premier.sous_themes[:2] or premier.termes_dominants[:2]
+            for terme in candidats:
+                resume = _condense_phrase(terme, limite=26)
+                if resume and resume not in benefit_candidates:
+                    benefit_candidates.append(resume.capitalize())
+        if analyse_serp.suggestions:
+            suggestion = _condense_phrase(analyse_serp.suggestions[0], limite=24)
+            if suggestion and suggestion not in benefit_candidates:
+                benefit_candidates.append(suggestion.capitalize())
 
-    focus_principal = focus_unique or (termes_serp[0] if termes_serp else "")
-    focus_principal = focus_principal.strip()
+    benefit = next((cand for cand in benefit_candidates if cand), None)
+    if not benefit:
+        benefit = "Confort durable"
 
-    segments: List[str] = [titre_collection]
-    if focus_principal and focus_principal.lower() not in titre_collection.lower():
-        focus_court = focus_principal[:22].rstrip()
-        segments.append(focus_court.capitalize())
+    suffix_map = {
+        "transac": f"Tests & avis {annee}",
+        "comparatif": f"Comparatif expert {annee}",
+        "guide": f"Guide expert {annee}",
+        "info": f"Tendances {annee}",
+    }
+    suffix = suffix_map.get(intent, f"Sélection {annee}")
+    if analyse_serp and analyse_serp.insights_structurels:
+        suffix = f"Données {annee}"
 
-    coeur = " – ".join(segments)
-    meta = f"{coeur} | {suffix}" if coeur else f"{titre_collection} | {suffix}"
-
-    if len(meta) > 60 and len(segments) > 1:
-        focus_reduit = focus_principal.split()[0] if " " in focus_principal else focus_principal
-        segments = [titre_collection, focus_reduit.capitalize()]
-        coeur = " – ".join([seg for seg in segments if seg])
-        meta = f"{coeur} | {suffix}" if coeur else f"{titre_collection} | {suffix}"
-
+    meta = f"{titre_collection} – {benefit} | {suffix}".strip()
     if len(meta) > 60:
-        meta = meta[:57].rstrip(" -") + "..."
+        benefit = _condense_phrase(benefit, limite=18)
+        meta = f"{titre_collection} – {benefit} | {suffix}".strip()
+    if len(meta) > 60:
+        meta = f"{titre_collection} | {suffix}".strip()
+    if len(meta) > 60:
+        meta = textwrap.shorten(meta, width=60, placeholder="…")
 
     return meta
 
@@ -753,41 +809,81 @@ def _generer_meta_description(
 ) -> str:
     """Crée une meta description engageante (~150 caractères)."""
 
+    intent = analyse_serp.intent_label if analyse_serp else _detecter_intention(titre_collection)
+    mot_cle = mots_cles[0] if mots_cles else titre_collection.lower()
     focus_valeurs = [valeur for _, valeur in caracteristiques] if caracteristiques else []
     focus_phrase = focus_unique or _liste_naturelle(focus_valeurs)
 
-    domaines = analyse_serp.domaines if analyse_serp else []
-    titres_domaines = [d.titre for d in domaines[:2] if getattr(d, "titre", "")]
-    titres_domaines = [titre.lower() for titre in titres_domaines if titre]
+    base_focus = (focus_phrase or mot_cle).lower()
+    probleme = f"les {base_focus} qui déçoivent"
+    if focus_unique:
+        probleme = f"les {titre_collection.lower()} sans {focus_unique.lower()}"
 
-    suggestion = ""
+    avantages: List[str] = []
     if analyse_serp:
-        if analyse_serp.questions_paa:
-            suggestion = analyse_serp.questions_paa[0].lower()
-        elif analyse_serp.suggestions:
-            suggestion = analyse_serp.suggestions[0].lower()
+        for insight in analyse_serp.insights_structurels:
+            avantage = _formater_avantage(insight)
+            if avantage and avantage not in avantages:
+                avantages.append(avantage)
+            if len(avantages) >= 2:
+                break
+    if focus_phrase and len(avantages) < 2:
+        avantage_focus = f"{focus_phrase} maîtrisé".strip()
+        avantage_focus = avantage_focus[0].upper() + avantage_focus[1:] if avantage_focus else ""
+        if avantage_focus and avantage_focus not in avantages:
+            avantages.append(avantage_focus)
+    domaines = analyse_serp.domaines if analyse_serp else []
+    if domaines and len(avantages) < 2:
+        titre = _condense_phrase(domaines[0].titre, limite=40)
+        if titre and titre not in avantages:
+            avantages.append(titre)
 
-    if not suggestion and len(mots_cles) > 1:
-        suggestion = mots_cles[1]
+    fallback_map = {
+        "transac": ["Livraison suivie", "Stock immédiat"],
+        "comparatif": ["Comparaison rapide", "Repères clairs"],
+        "guide": ["Conseils d'entretien", "Usage maîtrisé"],
+        "info": ["Inspiration assurée", "Tendances décryptées"],
+        "default": ["Sélection experte", "Finition soignée"],
+    }
+    while len(avantages) < 2:
+        options = fallback_map.get(intent, fallback_map["default"])
+        ajoute = False
+        for option in options:
+            if option not in avantages:
+                avantages.append(option)
+                ajoute = True
+                break
+        if not ajoute:
+            for option in fallback_map["default"]:
+                if option not in avantages:
+                    avantages.append(option)
+                    ajoute = True
+                    break
+        if not ajoute:
+            break
 
-    annee = datetime.now().year
+    qualite = "testés par nos experts"
+    produit = titre_collection.lower()
 
-    segments = [
-        f"{titre_collection} : accent sur {focus_phrase}" if focus_phrase else f"{titre_collection} : sélection experte",
-        f"critères : {_liste_naturelle(titres_domaines)}" if titres_domaines else "",
-        f"FAQ {suggestion}" if suggestion else "",
-        f"Livraison rapide {annee}"
-    ]
+    cta_map = {
+        "transac": "Profitez des nouveautés",
+        "comparatif": "Comparez les modèles",
+        "guide": "Explorez nos conseils",
+        "info": "Découvrez la sélection",
+    }
+    cta = cta_map.get(intent, "Découvrez la sélection")
 
-    description = ". ".join(segment for segment in segments if segment)
+    description = (
+        f"Fini {probleme}. "
+        f"Découvrez nos {produit} {qualite} : {avantages[0]}, {avantages[1]}. "
+        f"{cta}."
+    )
 
-    if mots_cles:
-        description = description.rstrip(".") + f" – {mots_cles[0]}"
-
+    description = re.sub(r"\s+", " ", description).strip()
     if len(description) > 160:
-        description = description[:157].rstrip(" ,;") + "..."
+        description = textwrap.shorten(description, width=157, placeholder="…")
 
-    return description[:160]
+    return description
 
 
 @dataclass(slots=True)
@@ -799,6 +895,7 @@ class SerpExtract:
     snippet: str
     extrait_contenu: str
     texte_integral: str
+    structured_data: List[Dict[str, str]] = field(default_factory=list)
 
 
 @dataclass(slots=True)
@@ -831,6 +928,8 @@ class AnalyseSerp:
     questions_paa: List[str] = field(default_factory=list)
     suggestions: List[str] = field(default_factory=list)
     intent_label: str = "info"
+    donnees_structurees: List[Dict[str, str]] = field(default_factory=list)
+    insights_structurels: List[str] = field(default_factory=list)
 
     def as_dict(self) -> dict:
         return {
@@ -858,6 +957,8 @@ class AnalyseSerp:
             "questions_paa": self.questions_paa,
             "suggestions": self.suggestions,
             "intent_label": self.intent_label,
+            "donnees_structurees": self.donnees_structurees,
+            "insights_structurels": self.insights_structurels,
         }
 
 
@@ -1068,6 +1169,9 @@ def _selectionner_piliers_mmr(
 
 _PAIR_REGEX = re.compile(r"(?P<cle>[\wÀ-ÖØ-öø-ÿ\s]{3,40})\s*[:\-]\s*(?P<valeur>[^.;\n]{2,60})")
 
+_PRICE_VALUE_REGEX = re.compile(r"(\d+[\d\s]*(?:[.,]\d+)?)")
+_MATIERE_SEPARATORS = re.compile(r"[\s]*[,;/][\s]*|\bet\b", re.IGNORECASE)
+
 
 def _extraire_pairs(texte: str) -> List[Dict[str, str]]:
     """Extrait des couples clé/valeur pour alimenter des tableaux comparatifs."""
@@ -1081,6 +1185,165 @@ def _extraire_pairs(texte: str) -> List[Dict[str, str]]:
     return resultats
 
 
+def _schema_value(bloc: Dict[str, object], *cles: str) -> Optional[object]:
+    """Récupère une valeur case-insensitive dans un bloc de données schema.org."""
+
+    if not isinstance(bloc, dict):
+        return None
+    for cle in cles:
+        cle_min = cle.lower()
+        for key, valeur in bloc.items():
+            if isinstance(key, str) and key.lower() == cle_min:
+                return valeur
+    return None
+
+
+def _normaliser_schema_valeur(valeur: object) -> str:
+    """Convertit une valeur schema.org hétérogène en chaîne propre."""
+
+    if valeur is None:
+        return ""
+    if isinstance(valeur, (list, tuple, set)):
+        morceaux = [_normaliser_schema_valeur(v) for v in valeur if v]
+        return ", ".join([m for m in morceaux if m])
+    if isinstance(valeur, dict):
+        if "name" in valeur:
+            return _normaliser_schema_valeur(valeur["name"])
+        if "@value" in valeur:
+            return _normaliser_schema_valeur(valeur["@value"])
+        morceaux = [_normaliser_schema_valeur(v) for v in valeur.values() if v]
+        return ", ".join([m for m in morceaux if m])
+    texte = str(valeur).strip()
+    return html.unescape(texte)
+
+
+def _extraire_prix_schema(bloc: Dict[str, object]) -> str:
+    """Formate un prix à partir d'un bloc schema.org."""
+
+    brut = _schema_value(bloc, "price", "lowprice", "highprice", "pricevalue")
+    if isinstance(brut, (list, tuple)) and brut:
+        brut = brut[0]
+    prix = _normaliser_schema_valeur(brut)
+    devise = _normaliser_schema_valeur(
+        _schema_value(bloc, "pricecurrency", "currency")
+    )
+    if prix and devise and devise.lower() not in prix.lower():
+        return f"{prix} {devise}".strip()
+    return prix.strip()
+
+
+def _extraire_dimensions_schema(bloc: Dict[str, object]) -> str:
+    """Assemble les dimensions pertinentes d'un bloc schema.org."""
+
+    elements: List[str] = []
+    for cle in ("size", "width", "height", "depth", "length", "weight"):
+        valeur = _normaliser_schema_valeur(_schema_value(bloc, cle))
+        if valeur:
+            etiquette = "Dimensions" if cle == "size" else cle.capitalize()
+            elements.append(f"{etiquette} {valeur}".strip())
+    uniques: List[str] = []
+    for element in elements:
+        if element not in uniques:
+            uniques.append(element)
+    return ", ".join(uniques)
+
+
+def _extraire_matiere_schema(bloc: Dict[str, object]) -> str:
+    """Déduit les matériaux depuis un bloc schema.org."""
+
+    matiere = _normaliser_schema_valeur(
+        _schema_value(bloc, "material", "materials", "fabric", "color")
+    )
+    return matiere
+
+
+def _extraire_nom_schema(bloc: Dict[str, object], fallback: str = "") -> str:
+    """Tente de récupérer le nom d'un produit/élément."""
+
+    nom = _normaliser_schema_valeur(
+        _schema_value(bloc, "name", "title", "productname", "itemoffered")
+    )
+    return nom or fallback
+
+
+def _construire_ligne_schema(
+    bloc: Dict[str, object], label: str = "", fallback: Optional[Dict[str, str]] = None
+) -> Optional[Dict[str, str]]:
+    """Crée une ligne normalisée (Produit/Prix/Dimensions/Matière/Caractéristiques)."""
+
+    if not isinstance(bloc, dict):
+        return None
+
+    ligne: Dict[str, str] = {
+        "Produit": _extraire_nom_schema(bloc, fallback.get("Produit", "") if fallback else label),
+        "Prix": _extraire_prix_schema(bloc),
+        "Dimensions": _extraire_dimensions_schema(bloc),
+        "Matière": _extraire_matiere_schema(bloc) or (fallback.get("Matière", "") if fallback else ""),
+        "Caractéristiques": "",
+    }
+
+    marque = _normaliser_schema_valeur(_schema_value(bloc, "brand"))
+    disponibilite = _normaliser_schema_valeur(
+        _schema_value(bloc, "availability", "availabilitytext")
+    )
+    notation = _normaliser_schema_valeur(
+        _schema_value(bloc, "ratingvalue", "aggregateRating", "reviewcount")
+    )
+    attributs = [texte for texte in (marque, disponibilite, notation) if texte]
+    if fallback and not ligne["Caractéristiques"]:
+        attributs.insert(0, fallback.get("Caractéristiques", ""))
+    ligne["Caractéristiques"] = ", ".join([att for att in attributs if att]).strip(", ")
+
+    if sum(bool(ligne[col]) for col in ("Produit", "Prix", "Dimensions", "Matière")) < 2:
+        return None
+    return ligne
+
+
+def _extraire_donnees_structurees(pagemap: Dict[str, object]) -> List[Dict[str, str]]:
+    """Convertit les données schema.org pertinentes en lignes de tableau."""
+
+    lignes: List[Dict[str, str]] = []
+    if not isinstance(pagemap, dict):
+        return lignes
+
+    def ajouter_ligne(bloc: Dict[str, object], fallback: Optional[Dict[str, str]] = None) -> None:
+        ligne = _construire_ligne_schema(bloc, fallback=fallback or {})
+        if ligne:
+            lignes.append(ligne)
+
+    produits = pagemap.get("product") or []
+    if not isinstance(produits, list):
+        produits = [produits]
+    for produit in produits[:6]:
+        ligne_produit = _construire_ligne_schema(produit, label="Produit") if isinstance(produit, dict) else None
+        if ligne_produit:
+            lignes.append(ligne_produit)
+        offres = []
+        if isinstance(produit, dict):
+            brut_offres = _schema_value(produit, "offers")
+            if brut_offres:
+                if isinstance(brut_offres, list):
+                    offres = [offre for offre in brut_offres if isinstance(offre, dict)]
+                elif isinstance(brut_offres, dict):
+                    offres = [brut_offres]
+        for offre in offres[:4]:
+            ajouter_ligne(offre, fallback=ligne_produit)
+
+    offres_directes = pagemap.get("offer") or []
+    if not isinstance(offres_directes, list):
+        offres_directes = [offres_directes]
+    for offre in offres_directes[:4]:
+        ajouter_ligne(offre)
+
+    agr_offres = pagemap.get("aggregateoffer") or []
+    if not isinstance(agr_offres, list):
+        agr_offres = [agr_offres]
+    for bloc in agr_offres[:2]:
+        ajouter_ligne(bloc)
+
+    return lignes[:10]
+
+
 def _generer_lignes_table(section: SectionSemantique) -> List[Dict[str, str]]:
     """Transforme les faits d'une section en lignes normalisées pour un tableau."""
 
@@ -1090,14 +1353,18 @@ def _generer_lignes_table(section: SectionSemantique) -> List[Dict[str, str]]:
         texte_fait = fait.strip()
         if not texte_fait:
             continue
-        ligne = {"Type": type_label, "Dimensions": "", "Prix": "", "Caractéristiques": ""}
+        ligne = {
+            "Produit": type_label,
+            "Dimensions": "",
+            "Prix": "",
+            "Matière": "",
+            "Caractéristiques": texte_fait,
+        }
         fait_min = texte_fait.lower()
         if re.search(r"\d+\s?(cm|mm|m|g/m²)", fait_min):
             ligne["Dimensions"] = texte_fait
         if re.search(r"\d+\s?€", texte_fait):
             ligne["Prix"] = texte_fait
-        if not ligne["Caractéristiques"]:
-            ligne["Caractéristiques"] = texte_fait
         lignes.append(ligne)
         if len(lignes) >= 6:
             break
@@ -1107,22 +1374,111 @@ def _generer_lignes_table(section: SectionSemantique) -> List[Dict[str, str]]:
 def make_table(rows: Sequence[Dict[str, str]]) -> str:
     """Construit une table HTML lorsque suffisamment de données sont disponibles."""
 
-    colonnes = ["Type", "Dimensions", "Prix", "Caractéristiques"]
+    colonnes = ["Produit", "Prix", "Dimensions", "Matière", "Caractéristiques"]
+    colonnes_utiles = [col for col in colonnes if any(row.get(col) for row in rows)]
+    if len(colonnes_utiles) < 3:
+        return ""
+
     lignes_valides = []
     for row in rows:
-        ligne = {col: row.get(col, "") for col in colonnes}
-        if all(ligne[col] for col in colonnes):
+        ligne = {col: row.get(col, "") for col in colonnes_utiles}
+        if sum(bool(ligne[col]) for col in colonnes_utiles) >= 3:
             lignes_valides.append(ligne)
 
     if len(lignes_valides) < 3:
         return ""
 
-    entete = "".join(f"<th>{html.escape(col)}</th>" for col in colonnes)
+    entete = "".join(f"<th>{html.escape(col)}</th>" for col in colonnes_utiles)
     corps = "".join(
-        "<tr>" + "".join(f"<td>{html.escape(ligne[col])}</td>" for col in colonnes) + "</tr>"
+        "<tr>"
+        + "".join(f"<td>{html.escape(ligne[col])}</td>" for col in colonnes_utiles)
+        + "</tr>"
         for ligne in lignes_valides
     )
     return f"<table><thead><tr>{entete}</tr></thead><tbody>{corps}</tbody></table>"
+
+
+def _segmenter_materiaux(valeur: str) -> List[str]:
+    """Découpe une valeur de matériau en éléments exploitables."""
+
+    if not valeur:
+        return []
+    morceaux = _MATIERE_SEPARATORS.split(valeur)
+    propres = []
+    for morceau in morceaux:
+        propre = morceau.strip()
+        if propre:
+            propres.append(propre.capitalize())
+    return propres
+
+
+def _aggreger_donnees_structurees(
+    extraits: Sequence[SerpExtract],
+) -> Tuple[List[Dict[str, str]], List[str]]:
+    """Fusionne les données structurées et calcule des insights quantitatifs."""
+
+    lignes: List[Dict[str, str]] = []
+    valeurs_prix: List[float] = []
+    materiaux = Counter()
+    dimensions: List[str] = []
+
+    for extrait in extraits:
+        if not extrait.structured_data:
+            continue
+        for ligne in extrait.structured_data:
+            lignes.append(ligne)
+            prix_brut = ligne.get("Prix", "")
+            if prix_brut:
+                match = _PRICE_VALUE_REGEX.search(prix_brut)
+                if match:
+                    try:
+                        valeurs_prix.append(float(match.group(1).replace(" ", "").replace(",", ".")))
+                    except ValueError:
+                        pass
+            matiere = ligne.get("Matière") or ""
+            for mat in _segmenter_materiaux(matiere):
+                materiaux[mat] += 1
+            dimension = ligne.get("Dimensions") or ""
+            if dimension and dimension not in dimensions:
+                dimensions.append(dimension)
+
+    insights: List[str] = []
+    if valeurs_prix:
+        moyenne = statistics.mean(valeurs_prix)
+        minimum = min(valeurs_prix)
+        maximum = max(valeurs_prix)
+        if len(valeurs_prix) > 1:
+            dispersion = statistics.pstdev(valeurs_prix)
+            insights.append(
+                f"Prix moyen relevé : {moyenne:.0f} € (min {minimum:.0f} €, max {maximum:.0f} €)"
+            )
+            if dispersion:
+                insights.append(f"Variation observée : ±{dispersion:.0f} € autour de la moyenne")
+        else:
+            insights.append(f"Prix observé : {moyenne:.0f} €")
+    if materiaux:
+        principaux = materiaux.most_common(2)
+        resume = ", ".join(f"{nom} ({count})" for nom, count in principaux)
+        insights.append(f"Matériaux dominants : {resume}")
+    if dimensions:
+        insights.append(f"Dimensions typiques : {', '.join(dimensions[:3])}")
+
+    lignes_uniques: List[Dict[str, str]] = []
+    deja_vus = set()
+    for ligne in lignes:
+        cle = (
+            ligne.get("Produit", ""),
+            ligne.get("Prix", ""),
+            ligne.get("Dimensions", ""),
+            ligne.get("Matière", ""),
+            ligne.get("Caractéristiques", ""),
+        )
+        if cle in deja_vus:
+            continue
+        deja_vus.add(cle)
+        lignes_uniques.append(ligne)
+
+    return lignes_uniques[:20], insights[:5]
 
 
 def allocate_word_budget(total: int = 1200, k: int = 10, weights: Optional[Sequence[float]] = None) -> List[int]:
@@ -1589,7 +1945,9 @@ def _construire_analyse_semantique_avancee(
         extrait_associe = extraits[index_extrait[indice_section]]
         resume = textwrap.shorten(section.texte, width=480, placeholder=" …")
         poids = float(np.asarray(tfidf_ligne.sum()).ravel()[0]) if np is not None else len(section.texte)
-        table_data = _generer_lignes_table(section)
+        table_data = list(_generer_lignes_table(section))
+        if extrait_associe.structured_data:
+            table_data.extend(extrait_associe.structured_data[:6])
 
         checklist = []
         for element in termes_dominants[:8] + section.entites[:8]:
@@ -1651,6 +2009,8 @@ def _construire_analyse_semantique_avancee(
 
     resume = "\n".join(lignes_resume)
 
+    donnees_structurees, insights_structurels = _aggreger_donnees_structurees(extraits)
+
     longueur_cible = max(int(CONFIG.get("target_words_min", 1200)), 1200)
     plan = construire_plan_piliers(domaines, total=longueur_cible)
 
@@ -1663,6 +2023,8 @@ def _construire_analyse_semantique_avancee(
         questions_paa=questions_paa,
         suggestions=suggestions,
         intent_label=_detecter_intention(extraits[0].titre if extraits else ""),
+        donnees_structurees=donnees_structurees,
+        insights_structurels=insights_structurels,
     )
 
 
@@ -1819,6 +2181,9 @@ def _collecter_resultats_serp(
             else:
                 print("        ⚠️ Impossible de récupérer le contenu de la page, utilisation du snippet uniquement")
 
+            pagemap = item.get("pagemap") or {}
+            donnees_structurees = _extraire_donnees_structurees(pagemap)
+
             resultats.append(
                 SerpExtract(
                     titre=titre.strip(),
@@ -1826,10 +2191,9 @@ def _collecter_resultats_serp(
                     snippet=_tronquer_texte(snippet or "", max_mots=40),
                     extrait_contenu=extrait,
                     texte_integral=texte_integral,
+                    structured_data=donnees_structurees,
                 )
             )
-
-            pagemap = item.get("pagemap") or {}
             for bloc in pagemap.get("question", []) + pagemap.get("faqquestion", []):
                 question = (bloc or {}).get("name") or (bloc or {}).get("text")
                 if question and question not in questions_paa:
@@ -1922,7 +2286,16 @@ def _construire_prompt(
             questions = ", ".join(domaine.questions[:3]) or "-"
             table_note = (
                 "; ".join(
-                    f"{ligne['Type']} | {ligne['Dimensions']} | {ligne['Prix']}"
+                    " | ".join(
+                        filtre
+                        for filtre in (
+                            ligne.get("Produit") or ligne.get("Type"),
+                            ligne.get("Prix"),
+                            ligne.get("Dimensions"),
+                            ligne.get("Matière"),
+                        )
+                        if filtre
+                    )
                     for ligne in domaine.table_rows[:3]
                 )
                 if domaine.table_rows
@@ -1951,6 +2324,33 @@ def _construire_prompt(
         )
     else:
         contexte = ""
+
+    bloc_insights_lignes: List[str] = []
+    if analyse_serp:
+        if analyse_serp.insights_structurels:
+            bloc_insights_lignes.append(
+                "Insights quantitatifs (schema.org) : "
+                + " | ".join(analyse_serp.insights_structurels[:4])
+            )
+        if analyse_serp.donnees_structurees:
+            extraits_schema = []
+            for ligne in analyse_serp.donnees_structurees[:5]:
+                elements = [
+                    ligne.get("Produit", ""),
+                    ligne.get("Prix", ""),
+                    ligne.get("Dimensions", ""),
+                    ligne.get("Matière", ""),
+                ]
+                extraits_schema.append(" | ".join([elt for elt in elements if elt]))
+            extraits_schema = [val for val in extraits_schema if val]
+            if extraits_schema:
+                bloc_insights_lignes.append(
+                    "Échantillon schema.org : " + "; ".join(extraits_schema)
+                )
+
+    bloc_insights = "\n".join(bloc_insights_lignes)
+    if bloc_insights:
+        contexte = (contexte + "\n" if contexte else "") + bloc_insights
 
     informations_supplementaires = (
         f"INFORMATIONS SUPPLÉMENTAIRES : {requete.infos_supplementaires}\n"
@@ -2016,27 +2416,36 @@ STRUCTURE ATTENDUE DU CONTENU HTML ({min_mots} à {max_mots} mots) :
 1. <div class="intro"> (120-150 mots)
    - Contexte marché + promesse de la collection.
    - Utiliser le mot-clé principal dès la première phrase.
-   - Introduire brièvement les bénéfices majeurs.
+   - Introduire brièvement les bénéfices majeurs et une image sensorielle (« Fini… », « Un confort visible dès le premier usage »).
+   - Terminer par un micro-CTA avec verbe d'action (ex : « Découvrir la sélection », « Comparer les finitions »).
 2. Une section par pilier sémantique (<section class="pilier">)
-   - Chaque pilier commence par <h2>« [Titre du pilier] »</h2>.
-   - Chaque <h2> intègre au moins une expression longue tirée des termes obligatoires.
-   - Développer 230-300 mots par pilier, en combinant paragraphes (<p>) et listes (<ul>/<ol>) pour clarifier.
+   - Chaque pilier commence par <h2>« [Titre du pilier] »</h2> intégrant une expression longue tirée des termes obligatoires.
+   - Développer 230-300 mots par pilier en combinant paragraphes (<p>), listes (<ul>/<ol>) et encadrés (<blockquote> ou <div class="focus">) pour aérer la lecture.
    - Introduire des sous-parties avec <h3> selon les sous-thèmes fournis.
    - Comparer, expliquer, donner des critères concrets, intégrer des notions de prix, matériaux, usages, innovations.
    - Chaque paragraphe intègre un fait mesurable ou un critère tangible (chiffre, norme, usage précis).
    - Intégrer au moins un tableau <table> nourri de données tangibles (dimensions, matériaux, prix moyens) liées au focus unique.
    - Ajouter pour chaque pilier un bloc <details class="accordion"> avec <summary> pour approfondir un angle secondaire sans cannibaliser les autres pages.
-   - Terminer chaque pilier par une liste <ul> d'arguments clés centrés sur {requete.focus_unique or 'la spécificité'}.
+   - Conclure chaque pilier par une liste <ul> d'arguments clés centrés sur {requete.focus_unique or 'la spécificité'} suivie d'un micro-CTA invitant à comparer ou explorer.
 3. Section "Conseils d'expert" (<h2>)
    - 2-3 paragraphes courts orientés décision (120-150 mots).
-   - Inclure recommandations pratiques, erreurs à éviter, signaux de qualité.
-4. Section FAQ (<div class="faq">)
+   - Citer tests internes, retours clients et ratios calculés à partir des données structurées collectées.
+   - Introduire un encadré « Astuce terrain » en 3 puces pour guider la décision.
+4. Section "Données à surveiller" (<section class="insights">)
+   - Exploiter les insights quantitatifs fournis (prix moyen, matériaux dominants, dimensions typiques) pour construire un tableau ou une liste chiffrée.
+   - Mettre en avant les tendances à surveiller et préciser le prochain point de contrôle ou seuil d'alerte.
+   - Terminer par un CTA discret (« Voir les modèles stables », « Comparer les matériaux »).
+5. Section "Ce que peu de gens savent" (<div class="contrepoint">)
+   - Format <h2> + <ul> de 3-4 points révélant informations surprenantes ou conseils rarement évoqués.
+   - Mentionner au moins une anecdote issue des données clients ou d'un test terrain.
+   - Conclure par une phrase sensorielle qui renforce la différenciation.
+6. Section FAQ (<div class="faq">)
    - 6 à 8 questions dont : {', '.join(requete.questions_faq[:5])}.
    - Respecter le format :
      <div class="faq-item"> -> <h3 class="faq-question">Question</h3> + <div class="faq-answer">Réponse détaillée (80-110 mots)</div>
    - Chaque réponse intègre naturellement 2 à 3 termes obligatoires distincts.
    - Prioriser les questions issues de la SERP si pertinentes.{faq_data}
-5. <div class="conclusion"> (80-100 mots)
+7. <div class="conclusion"> (80-100 mots)
    - Synthèse stratégique + appel à l'action fort.
    - Ajouter 2 à 3 liens internes pertinents (format : <a href="/chemin">Ancre riche</a>){liens}
 
@@ -2057,6 +2466,11 @@ GUIDELINES ÉDITORIALES :
 - Varier le vocabulaire en évitant toute répétition excessive (>2.5% du texte).
 - Chaque paragraphe contient au moins un élément concret (mesure, critère mesurable, comparaison factuelle ou usage précis).
 - Favoriser une lecture fluide : phrases de 12 à 24 mots en moyenne, transitions naturelles, paragraphes aérés.
+- Introduire des micro-CTA dynamiques en fin d'introduction, de pilier, de section insights et avant la conclusion (verbes : Découvrez, Comparez, Profitez, Adoptez, Explorez).
+- Insérer au moins une phrase commençant par « Fini » et une autre valorisant la durabilité (ex : « Une solution pensée pour durer »).
+- La section « Données à surveiller » doit citer explicitement au moins deux chiffres issus des insights fournis (prix, matériaux, dimensions) et relier ces valeurs à un conseil actionnable.
+- La section « Ce que peu de gens savent » doit rester factuelle, s'appuyer sur des signaux clients/tests et éviter toute formulation promotionnelle.
+- Utiliser systématiquement listes, tableaux et encadrés visuels pour limiter les blocs continus à moins de 90 mots.
 - Guider le lecteur vers la décision d'achat : critères de sélection, signaux de qualité, services logistiques ou SAV, preuves sociales génériques.
 
 {informations_supplementaires}{contexte}
